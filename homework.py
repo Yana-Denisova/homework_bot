@@ -1,14 +1,15 @@
 import logging
 import os
 import time
+import sys
+import json
 from http import HTTPStatus
 
 import requests
 import telegram
 from dotenv import load_dotenv
 
-from exceptions import (ResponseHomeworksNotInListException,
-                        ResponseNoHomeworksException, TelegramError,
+from exceptions import (ResponseNoHomeworksException, TelegramError,
                         UnavailableServerException)
 
 load_dotenv()
@@ -39,12 +40,10 @@ logger.addHandler(handler)
 
 def send_message(bot, message):
     """Отправка сообщения в TELEGRAM."""
-    chat_id = TELEGRAM_CHAT_ID
-    text = message
     try:
-        bot.send_message(chat_id, text)
+        bot.send_message(TELEGRAM_CHAT_ID, message)
         logger.info(f'Сообщение:"{message}" успешно отправлено')
-    except Exception as error:
+    except TelegramError as error:
         logger.error(f'Сбой: {error} при отправке'
                      f'сообщения:"{message}" в телеграмм')
         raise TelegramError(f'Сбой: {error} при отправке'
@@ -55,25 +54,40 @@ def get_api_answer(current_timestamp):
     """Получение ответа от API."""
     timestamp = current_timestamp or int(time.time())
     params = {'from_date': timestamp}
-    homework_statuses = requests.get(url=ENDPOINT,
-                                     headers=HEADERS, params=params)
+    try:
+        homework_statuses = requests.get(url=ENDPOINT,
+                                         headers=HEADERS, params=params)
+    except requests.exceptions.RequestException as error:
+        logger.error(f'URL практикума недоступен: {error}')
     if homework_statuses.status_code != HTTPStatus.OK:
         raise UnavailableServerException(
             f'Сервер API недоступен: {homework_statuses.status_code}'
         )
+    try:
+        homework_statuses.json()
+    except json.decoder.JSONDecodeError as error:
+        logger.error(f'Ошибка форматирования json: {error}')
     return homework_statuses.json()
 
 
 def check_response(response):
     """Проверка ответа API."""
+    if not isinstance(response, dict):
+        raise TypeError(
+            'Формат ответа API отличается от ожидаемого'
+        )
     if not isinstance(response['homeworks'], list):
-        raise ResponseHomeworksNotInListException(
+        raise KeyError(
             'Формат ответа API отличается от ожидаемого'
         )
     if response['homeworks'] is None:
         raise ResponseNoHomeworksException(
             'Ответ API не содержит ключ homeworks')
-    return response.get('homeworks')
+    if len(response.get('homeworks')) != 0:
+        return response.get('homeworks')
+    else:
+        raise ResponseNoHomeworksException(
+            'Домашка пока не взята на проверку')
 
 
 def parse_status(homework):
@@ -105,25 +119,27 @@ def main():
     bot = telegram.Bot(token=TELEGRAM_TOKEN)
     current_timestamp = int(time.time())
 
-    check_tokens()
+    if check_tokens():
+        while True:
+            try:
+                response = get_api_answer(current_timestamp)
+                homework = check_response(response)
+                if homework != []:
+                    send_message(bot, parse_status(homework[0]))
+                current_timestamp = response.get('current_date')
+                time.sleep(RETRY_TIME)
 
-    while True:
-        try:
-            response = get_api_answer(current_timestamp)
-            homework = check_response(response)
-            if homework != []:
-                send_message(bot, parse_status(homework[0]))
-            current_timestamp = response.get('current_date')
-            time.sleep(RETRY_TIME)
-
-        except Exception as error:
-            message = f'Сбой в работе программы: {error}'
-            logger.error(f'Сбой в работе программы: {error}')
-            send_message(bot, message)
-            time.sleep(RETRY_TIME)
-        else:
-            logger.debug('Отсутствие в ответе новых статусов')
-            time.sleep(RETRY_TIME)
+            except Exception as error:
+                message = f'Сбой в работе программы: {error}'
+                logger.error(message)
+                send_message(bot, message)
+                time.sleep(RETRY_TIME)
+            else:
+                logger.debug('Отсутствие в ответе новых статусов.')
+                time.sleep(RETRY_TIME)
+    else:
+        sys.exit('Завершение работы программы '
+                 'из-за отсутствия необходимых токенов.')
 
 
 if __name__ == '__main__':

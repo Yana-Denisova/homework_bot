@@ -4,12 +4,6 @@ class UnavailableServerException(Exception):
     pass
 
 
-class ResponseHomeworksNotInListException(Exception):
-    """Исключение, если формат ответа API отличается от ожидаемого."""
-
-    pass
-
-
 class ResponseNoHomeworksException(Exception):
     """Исключение, если ответ API не содержит ключ homeworks."""
 
