@@ -1,15 +1,16 @@
+import json
 import logging
 import os
-import time
 import sys
-import json
+import time
 from http import HTTPStatus
 
 import requests
 import telegram
 from dotenv import load_dotenv
 
-from exceptions import (ResponseNoHomeworksException, TelegramError,
+from exceptions import (JSONDecodeErrorException, RequestExceptionError,
+                        ResponseNoHomeworksException, TelegramError,
                         UnavailableServerException)
 
 load_dotenv()
@@ -57,8 +58,19 @@ def get_api_answer(current_timestamp):
     try:
         homework_statuses = requests.get(url=ENDPOINT,
                                          headers=HEADERS, params=params)
+    except requests.exceptions.TooManyRedirects as error:
+        logger.error(f'TooManyRedirects:{error}')
+        raise RequestExceptionError(error)
+    except requests.exceptions.ConnectionError as error:
+        logger.error(f'Error Connecting:{error}')
+        raise RequestExceptionError(error)
+    except requests.exceptions.Timeout as error:
+        logger.error(f'Timeout Error:{error}')
+        raise RequestExceptionError(error)
     except requests.exceptions.RequestException as error:
-        logger.error(f'URL практикума недоступен: {error}')
+        logger.error(f'URL практикума недоступен:{error}')
+        raise RequestExceptionError(error)
+
     if homework_statuses.status_code != HTTPStatus.OK:
         raise UnavailableServerException(
             f'Сервер API недоступен: {homework_statuses.status_code}'
@@ -67,6 +79,7 @@ def get_api_answer(current_timestamp):
         homework_statuses.json()
     except json.decoder.JSONDecodeError as error:
         logger.error(f'Ошибка форматирования json: {error}')
+        raise JSONDecodeErrorException(error)
     return homework_statuses.json()
 
 
@@ -75,6 +88,10 @@ def check_response(response):
     if not isinstance(response, dict):
         raise TypeError(
             'Формат ответа API отличается от ожидаемого'
+        )
+    if 'homeworks' not in response:
+        raise KeyError(
+            'В ответе нет ключа homeworks'
         )
     if not isinstance(response['homeworks'], list):
         raise KeyError(
